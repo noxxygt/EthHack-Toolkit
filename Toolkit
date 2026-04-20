@@ -1,0 +1,391 @@
+"""
+EthHack Toolkit — Ethical Hacking Learning Tool
+Powered by Claude AI (Anthropic)
+"""
+
+import tkinter as tk
+from tkinter import ttk, scrolledtext
+import threading
+import urllib.request
+import urllib.error
+import json
+import ssl
+
+# ── Farben & Stil ──────────────────────────────────────────────
+BG       = "#0a0e0a"
+BG2      = "#111611"
+BG3      = "#1a221a"
+BORDER   = "#1e2e1e"
+GREEN    = "#00ff88"
+GREEN_D  = "#00cc6a"
+TEXT     = "#c8e6c8"
+MUTED    = "#5a7a5a"
+RED      = "#ff4444"
+AMBER    = "#ffaa00"
+BLUE     = "#44aaff"
+FONT_MONO = ("Courier New", 11)
+FONT_MONO_SM = ("Courier New", 10)
+FONT_BOLD = ("Courier New", 11, "bold")
+FONT_HEAD = ("Arial", 10, "bold")
+
+# ── Tools & Prompts ────────────────────────────────────────────
+TOOLS = {
+    "🔍  Port Scan":       ("portscan",  lambda t: f'Simuliere einen realistischen Nmap Port-Scan für Ziel: "{t}". Zeige typische Terminal-Ausgabe mit offenen Ports, Diensten und Versionen (realistisch erfunden). Dann analysiere und gib Sicherheitsempfehlungen. Am Ende JSON-Array: [{{"sev":"HIGH","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "🌐  DNS Lookup":      ("dns",       lambda t: f'Simuliere DNS-Enumeration für "{t}" mit dnsenum. Zeige A/MX/NS/TXT Records und Subdomains. Analysiere Risiken. Am Ende JSON-Array: [{{"sev":"HIGH","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "📋  WHOIS Info":      ("whois",     lambda t: f'Simuliere WHOIS-Abfrage für "{t}". Zeige Registrar, Ablaufdatum, Nameserver. Analysiere Risiken. Am Ende JSON-Array: [{{"sev":"MED","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "📡  HTTP Headers":    ("headers",   lambda t: f'Simuliere HTTP Security Header Analyse für "https://{t}". Zeige alle Header, markiere fehlende Security-Header, berechne Score. Am Ende JSON-Array: [{{"sev":"HIGH","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "💉  SQL Injection":   ("sqli",      lambda t: f'Erkläre SQL-Injection für "{t}". Zeige Typen, Payloads (Lernzweck), sqlmap-Einsatz und Schutzmaßnahmen. Am Ende JSON-Array: [{{"sev":"HIGH","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "⚡  XSS Check":       ("xss",       lambda t: f'Erkläre XSS-Angriffe für "{t}". Zeige Reflected/Stored/DOM-XSS mit Beispielen und Schutz. Am Ende JSON-Array: [{{"sev":"HIGH","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "🔒  SSL/TLS Audit":   ("ssl",       lambda t: f'Simuliere testssl.sh Audit für "{t}". Zeige TLS-Versionen, Cipher Suites, Zertifikat-Details, bekannte Schwachstellen. Am Ende JSON-Array: [{{"sev":"MED","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "👁   OSINT":           ("osint",     lambda t: f'Erkläre OSINT-Methoden für "{t}". Was ist öffentlich findbar? Shodan, Google Dorks, GitHub, LinkedIn. Am Ende JSON-Array: [{{"sev":"HIGH","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+    "💬  Freie Analyse":   ("custom",    lambda t: f'Analysiere "{t}" als ethischer Hacker. Was sollte geprüft werden, welche Tools und typische Schwachstellen? Am Ende JSON-Array: [{{"sev":"INFO","title":"...","desc":"..."}}]. Antworte auf Deutsch.'),
+}
+
+SYS_PROMPT = (
+    "Du bist ein erfahrener ethischer Hacker und Security-Researcher. "
+    "Du hilfst beim Lernen und Verstehen von Sicherheitsthemen. "
+    "Formatiere Terminal-Output klar und strukturiert mit ASCII-Trennlinien. "
+    "Antworte IMMER auf Deutsch. Sei lehrreich und realistisch."
+)
+
+# ── Haupt-App ──────────────────────────────────────────────────
+class EthHackApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("EthHack Toolkit — Ethical Hacking Tool")
+        self.geometry("1100x680")
+        self.minsize(900, 580)
+        self.configure(bg=BG)
+        self.resizable(True, True)
+
+        self.api_key = tk.StringVar()
+        self.current_tool = list(TOOLS.keys())[0]
+        self.context = []
+        self.busy = False
+        self.scan_count = 0
+        self.last_target = ""
+
+        self._build_ui()
+        self._log("# EthHack Toolkit — Ethical Hacking Learning Tool", "cmt")
+        self._log("# Powered by Claude AI (Anthropic)", "cmt")
+        self._log("# ─────────────────────────────────────────", "cmt")
+        self._log("# 1. API-Key eintragen (oben rechts)", "cmt")
+        self._log("# 2. Ziel eingeben (z.B. example.com)", "cmt")
+        self._log("# 3. Tool aus der Liste wählen", "cmt")
+        self._log("# 4. [SCAN STARTEN] klicken", "cmt")
+        self._log("# Nur auf autorisierten Systemen verwenden!", "warn")
+
+    # ── UI-Aufbau ──────────────────────────────────────────────
+    def _build_ui(self):
+        # Titelleiste
+        topbar = tk.Frame(self, bg=BG2, height=44)
+        topbar.pack(fill="x", side="top")
+        topbar.pack_propagate(False)
+
+        tk.Label(topbar, text="⚡ EthHack Toolkit", bg=BG2,
+                 fg=GREEN, font=("Arial", 13, "bold")).pack(side="left", padx=16, pady=10)
+        tk.Label(topbar, text="AUTHORIZED USE ONLY", bg=BG2,
+                 fg=MUTED, font=("Arial", 9)).pack(side="left", padx=4)
+
+        # API Key
+        tk.Label(topbar, text="API Key:", bg=BG2, fg=MUTED,
+                 font=FONT_MONO_SM).pack(side="right", padx=(0, 4), pady=10)
+        api_entry = tk.Entry(topbar, textvariable=self.api_key, show="*",
+                             bg=BG3, fg=TEXT, insertbackground=GREEN,
+                             font=FONT_MONO_SM, width=36, relief="flat",
+                             highlightthickness=1, highlightbackground=BORDER,
+                             highlightcolor=GREEN_D)
+        api_entry.pack(side="right", padx=(0, 12), pady=10, ipady=3)
+
+        # Scan-Leiste
+        scanbar = tk.Frame(self, bg=BG2, height=42)
+        scanbar.pack(fill="x", side="top")
+        scanbar.pack_propagate(False)
+
+        tk.Label(scanbar, text="Ziel:", bg=BG2, fg=MUTED,
+                 font=FONT_MONO_SM).pack(side="left", padx=(14, 4), pady=9)
+        self.target_var = tk.StringVar()
+        tgt_entry = tk.Entry(scanbar, textvariable=self.target_var,
+                             bg=BG3, fg=TEXT, insertbackground=GREEN,
+                             font=FONT_MONO, width=32, relief="flat",
+                             highlightthickness=1, highlightbackground=BORDER,
+                             highlightcolor=GREEN_D)
+        tgt_entry.pack(side="left", padx=(0, 8), pady=9, ipady=3)
+        tgt_entry.bind("<Return>", lambda e: self._run_scan())
+
+        self.run_btn = tk.Button(scanbar, text="▶  SCAN STARTEN",
+                                 bg=BG3, fg=GREEN, font=FONT_HEAD,
+                                 relief="flat", cursor="hand2",
+                                 activebackground="#1a2e1a", activeforeground=GREEN_D,
+                                 command=self._run_scan, padx=14, pady=3,
+                                 highlightthickness=1, highlightbackground=GREEN_D)
+        self.run_btn.pack(side="left", padx=(0, 6), pady=8)
+
+        tk.Button(scanbar, text="✕  Löschen",
+                  bg=BG3, fg=MUTED, font=FONT_HEAD,
+                  relief="flat", cursor="hand2",
+                  activebackground=BG3, activeforeground=TEXT,
+                  command=self._clear, padx=10, pady=3,
+                  highlightthickness=1, highlightbackground=BORDER
+                  ).pack(side="left", pady=8)
+
+        self.status_lbl = tk.Label(scanbar, text="● bereit", bg=BG2,
+                                   fg=MUTED, font=FONT_MONO_SM)
+        self.status_lbl.pack(side="right", padx=14)
+
+        # Trennlinie
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+
+        # Hauptbereich
+        main = tk.Frame(self, bg=BG)
+        main.pack(fill="both", expand=True)
+
+        # Sidebar
+        sidebar = tk.Frame(main, bg=BG2, width=190)
+        sidebar.pack(side="left", fill="y")
+        sidebar.pack_propagate(False)
+        tk.Frame(main, bg=BORDER, width=1).pack(side="left", fill="y")
+
+        tk.Label(sidebar, text="TOOLS", bg=BG2, fg=MUTED,
+                 font=("Arial", 8, "bold")).pack(anchor="w", padx=14, pady=(12, 4))
+
+        self.tool_btns = {}
+        for name in TOOLS:
+            btn = tk.Button(sidebar, text=name, bg=BG2, fg="#8aaa8a",
+                            font=FONT_MONO_SM, relief="flat", anchor="w",
+                            cursor="hand2", padx=14, pady=5,
+                            activebackground=BG3, activeforeground=TEXT,
+                            command=lambda n=name: self._set_tool(n))
+            btn.pack(fill="x")
+            self.tool_btns[name] = btn
+        self._highlight_tool(self.current_tool)
+
+        # Terminal-Bereich
+        term_frame = tk.Frame(main, bg=BG)
+        term_frame.pack(side="left", fill="both", expand=True)
+
+        # Terminal-Header
+        thead = tk.Frame(term_frame, bg=BG2, height=30)
+        thead.pack(fill="x")
+        thead.pack_propagate(False)
+        self.thead_lbl = tk.Label(thead, text="PORT SCAN", bg=BG2,
+                                  fg=MUTED, font=("Arial", 9))
+        self.thead_lbl.pack(side="left", padx=12, pady=7)
+
+        # Terminal-Output
+        self.term = scrolledtext.ScrolledText(
+            term_frame, bg=BG, fg=TEXT, font=FONT_MONO,
+            insertbackground=GREEN, relief="flat",
+            wrap="word", state="disabled",
+            selectbackground="#1a3a1a", selectforeground=GREEN,
+        )
+        self.term.pack(fill="both", expand=True, padx=0, pady=0)
+
+        # Tags
+        self.term.tag_configure("cmt",  foreground=MUTED)
+        self.term.tag_configure("ok",   foreground="#8aaa8a")
+        self.term.tag_configure("inf",  foreground=BLUE)
+        self.term.tag_configure("warn", foreground=AMBER)
+        self.term.tag_configure("err",  foreground=RED)
+        self.term.tag_configure("good", foreground=GREEN)
+        self.term.tag_configure("bold", foreground=TEXT, font=FONT_BOLD)
+        self.term.tag_configure("pr",   foreground=GREEN)
+        self.term.tag_configure("ai",   foreground=TEXT)
+        self.term.tag_configure("usr",  foreground=AMBER)
+
+        # Trennlinie
+        tk.Frame(term_frame, bg=BORDER, height=1).pack(fill="x")
+
+        # Folgefrage-Leiste
+        chatbar = tk.Frame(term_frame, bg=BG2, height=42)
+        chatbar.pack(fill="x")
+        chatbar.pack_propagate(False)
+        tk.Label(chatbar, text="Folgefrage:", bg=BG2, fg=MUTED,
+                 font=FONT_MONO_SM).pack(side="left", padx=(12, 4), pady=9)
+        self.chat_var = tk.StringVar()
+        chat_entry = tk.Entry(chatbar, textvariable=self.chat_var,
+                              bg=BG3, fg=TEXT, insertbackground=GREEN,
+                              font=FONT_MONO_SM, relief="flat",
+                              highlightthickness=1, highlightbackground=BORDER,
+                              highlightcolor=GREEN_D)
+        chat_entry.pack(side="left", fill="x", expand=True, padx=(0, 8), pady=9, ipady=3)
+        chat_entry.bind("<Return>", lambda e: self._send_chat())
+
+        self.chat_btn = tk.Button(chatbar, text="↗ Senden",
+                                  bg=BG3, fg=GREEN, font=FONT_HEAD,
+                                  relief="flat", cursor="hand2",
+                                  activebackground="#1a2e1a", activeforeground=GREEN_D,
+                                  command=self._send_chat, padx=10, pady=3,
+                                  highlightthickness=1, highlightbackground=GREEN_D)
+        self.chat_btn.pack(side="right", padx=(0, 10), pady=8)
+
+        # Statusleiste
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", side="bottom")
+        sbar = tk.Frame(self, bg=BG2, height=24)
+        sbar.pack(fill="x", side="bottom")
+        sbar.pack_propagate(False)
+        self.sb_tool  = tk.Label(sbar, text="Tool: –",    bg=BG2, fg=MUTED, font=("Arial", 9))
+        self.sb_tgt   = tk.Label(sbar, text="Ziel: –",    bg=BG2, fg=MUTED, font=("Arial", 9))
+        self.sb_scans = tk.Label(sbar, text="Scans: 0",   bg=BG2, fg=MUTED, font=("Arial", 9))
+        self.sb_tool.pack(side="left",  padx=14)
+        self.sb_tgt.pack(side="left",   padx=14)
+        self.sb_scans.pack(side="right", padx=14)
+
+    # ── Helfer ─────────────────────────────────────────────────
+    def _log(self, text, tag="ok"):
+        self.term.configure(state="normal")
+        self.term.insert("end", text + "\n", tag)
+        self.term.see("end")
+        self.term.configure(state="disabled")
+
+    def _log_inline(self, text, tag="ai"):
+        self.term.configure(state="normal")
+        self.term.insert("end", text, tag)
+        self.term.see("end")
+        self.term.configure(state="disabled")
+
+    def _clear(self):
+        self.term.configure(state="normal")
+        self.term.delete("1.0", "end")
+        self.term.configure(state="disabled")
+        self.context = []
+        self._log(f"# {self.current_tool} — Ziel eingeben und Scan starten", "cmt")
+
+    def _highlight_tool(self, name):
+        for n, btn in self.tool_btns.items():
+            if n == name:
+                btn.configure(bg="#0f1e0f", fg=GREEN,
+                              highlightthickness=0)
+            else:
+                btn.configure(bg=BG2, fg="#8aaa8a")
+
+    def _set_tool(self, name):
+        self.current_tool = name
+        self._highlight_tool(name)
+        label = TOOLS[name][0].upper()
+        self.thead_lbl.configure(text=label)
+        self.sb_tool.configure(text=f"Tool: {TOOLS[name][0]}")
+        self._clear()
+
+    def _set_busy(self, b):
+        self.busy = b
+        state = "disabled" if b else "normal"
+        self.run_btn.configure(state=state)
+        self.chat_btn.configure(state=state)
+        if b:
+            self.status_lbl.configure(text="● läuft...", fg=GREEN)
+        else:
+            self.status_lbl.configure(text="● fertig", fg=GREEN_D)
+
+    # ── Scan ───────────────────────────────────────────────────
+    def _run_scan(self):
+        if self.busy:
+            return
+        target = self.target_var.get().strip()
+        if not target:
+            self._log("⚠ Bitte ein Ziel eingeben.", "warn")
+            return
+        if not self.api_key.get().strip():
+            self._log("⚠ Bitte einen Anthropic API-Key eintragen (oben rechts).", "warn")
+            return
+
+        self.last_target = target
+        self.context = []
+        self.scan_count += 1
+        self._clear()
+        self.sb_tgt.configure(text=f"Ziel: {target}")
+        self.sb_scans.configure(text=f"Scans: {self.scan_count}")
+        self._set_busy(True)
+
+        _, prompt_fn = TOOLS[self.current_tool]
+        prompt = prompt_fn(target)
+        self.context.append({"role": "user", "content": prompt})
+
+        self._log(f"$ {TOOLS[self.current_tool][0]} {target}", "pr")
+        self._log("# Analysiere mit Claude AI...", "cmt")
+        threading.Thread(target=self._call_api, daemon=True).start()
+
+    def _send_chat(self):
+        if self.busy:
+            return
+        question = self.chat_var.get().strip()
+        if not question:
+            return
+        if not self.last_target:
+            self._log("⚠ Zuerst einen Scan starten.", "warn")
+            return
+        if not self.api_key.get().strip():
+            self._log("⚠ API-Key fehlt.", "warn")
+            return
+        self.chat_var.set("")
+        self.context.append({"role": "user", "content": question})
+        self._set_busy(True)
+        self._log(f"\n> {question}", "usr")
+        threading.Thread(target=self._call_api, daemon=True).start()
+
+    # ── API-Aufruf (streaming) ─────────────────────────────────
+    def _call_api(self):
+        ctx = ssl.create_default_context()
+        payload = json.dumps({
+            "model":      "claude-sonnet-4-20250514",
+            "max_tokens": 1024,
+            "system":     SYS_PROMPT,
+            "messages":   self.context,
+            "stream":     True,
+        }).encode()
+
+        req = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=payload,
+            headers={
+                "Content-Type":      "application/json",
+                "x-api-key":         self.api_key.get().strip(),
+                "anthropic-version": "2023-06-01",
+            },
+            method="POST",
+        )
+
+        full_text = ""
+        self.after(0, lambda: self._log_inline("\n", "ai"))
+
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=60) as resp:
+                buf = ""
+                while True:
+                    chunk = resp.read(256)
+                    if not chunk:
+                        break
+                    buf += chunk.decode("utf-8", errors="replace")
+                    while "\n" in buf:
+                        line, buf = buf.split("\n", 1)
+                        line = line.strip()
+                        if not line.startswith("data: "):
+                            continue
+                        data = line[6:].strip()
+                        if data == "[DONE]":
+                            continue
+                        try:
+                            ev = json.loads(data)
+                            if ev.get("type") == "content_block_delta":
+                                t = ev.get("delta", {}).get("text", "")
+                                if t:
+                                    full_text += t
+                                    self.after(0, lambda x=t: self._log_inline(x, "ai"))
+                        except Exception:
+                            pass
+
+        except urllib.error.HTTPError as e:
+            body = e.read().decode()
+            self.after(0, lambda: self._log(f"\n✗ HTTP {e.code}: {body}", "err"))
+        except Exception as ex:
+            self.after(0, lambda: self._log(f"\n✗ Fehler: {ex}", "err"))
+
+        self.context.append({"role": "assistant", "content": full_text})
+        self.after(0, lambda: self._log("\n", "ok"))
+        self.after(0, lambda: self._set_busy(False))
+
+
+# ── Start ──────────────────────────────────────────────────────
+if __name__ == "__main__":
+    app = EthHackApp()
+    app.mainloop()
